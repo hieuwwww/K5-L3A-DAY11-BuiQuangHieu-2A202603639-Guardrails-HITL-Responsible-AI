@@ -321,7 +321,7 @@ async def run_assignment_suite(pipeline) -> dict:
 
     # Write outputs only after full successful run
     root = Path(__file__).resolve().parents[2]
-    outputs_dir = root / "outputs"
+    outputs_dir = Path(pipeline.get("outputs_dir", root / "outputs"))
     outputs_dir.mkdir(parents=True, exist_ok=True)
 
     (outputs_dir / "results.json").write_text(

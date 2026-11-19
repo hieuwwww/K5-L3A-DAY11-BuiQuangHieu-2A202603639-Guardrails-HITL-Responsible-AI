@@ -234,7 +234,7 @@ class TestAssignmentSuite:
     """Tests for run_assignment_suite."""
 
     @pytest.fixture
-    def mock_pipeline(self):
+    def mock_pipeline(self, tmp_path):
         from assignment.pipeline import build_production_plugins, build_observability
         from agents.agent import create_blue_agent
         from core.openai_runtime import OpenAIRunner
@@ -264,6 +264,7 @@ class TestAssignmentSuite:
             "monitor": monitor,
             "create_blue_agent": mock_create_blue_agent,
             "mock_runner": mock_runner,
+            "outputs_dir": tmp_path,
         }
 
     @pytest.mark.asyncio
@@ -272,6 +273,7 @@ class TestAssignmentSuite:
         from assignment.pipeline import run_assignment_suite
 
         result = await run_assignment_suite(mock_pipeline)
+        assert (mock_pipeline["outputs_dir"] / "results.json").exists()
 
         assert "safe_queries" in result
         assert len(result["safe_queries"]) >= 5
