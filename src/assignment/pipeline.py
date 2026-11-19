@@ -6,9 +6,14 @@ You may use Google ADK plugins, LangGraph, NeMo, or pure Python.
 """
 from __future__ import annotations
 
+import re
+from urllib.parse import urlsplit
+
 from assignment.rate_limiter import RateLimitPlugin
 from assignment.audit_log import AuditLogPlugin
 from assignment.monitoring import MonitoringAlert
+from guardrails.input_guardrails import InputGuardrailPlugin
+from guardrails.output_guardrails import OutputGuardrailPlugin, content_filter
 
 
 def is_egress_allowed(destination: str, payload: str) -> bool:
@@ -19,7 +24,31 @@ def is_egress_allowed(destination: str, payload: str) -> bool:
     contain a password, API key, database host, phone number or email address.
     Do not let the LLM's prose decide this policy.
     """
-    raise NotImplementedError("Implement is_egress_allowed")
+    parsed = urlsplit(destination)
+
+    if parsed.scheme != "https":
+        return False
+
+    if parsed.hostname != "api.vinbank.example":
+        return False
+
+    if parsed.username or parsed.password:
+        return False
+
+    if parsed.port is not None and parsed.port not in (443, 8443):
+        return False
+
+    filter_result = content_filter(payload)
+    if not filter_result["safe"]:
+        return False
+
+    sensitive_labels = ["password", "api key", "secret"]
+    payload_lower = payload.lower()
+    for label in sensitive_labels:
+        if label in payload_lower:
+            return False
+
+    return True
 
 
 def build_production_plugins(
@@ -38,12 +67,16 @@ def build_production_plugins(
     Audit/monitoring can be plugins or side observers — document your choice.
     The action gateway calls ``is_egress_allowed`` separately before any sink.
     """
-    raise NotImplementedError("Implement build_production_plugins")
+    return [
+        RateLimitPlugin(max_requests=max_requests, window_seconds=window_seconds),
+        InputGuardrailPlugin(),
+        OutputGuardrailPlugin(use_llm_judge=use_llm_judge),
+    ]
 
 
 def build_observability():
     """Return (AuditLogPlugin(), MonitoringAlert())."""
-    raise NotImplementedError("Implement build_observability")
+    return (AuditLogPlugin(), MonitoringAlert())
 
 
 async def run_assignment_suite(pipeline) -> dict:
