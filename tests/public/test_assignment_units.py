@@ -357,5 +357,56 @@ class TestAssignmentSuite:
             await run_assignment_suite(failing_pipeline)
 
 
+class TestAdversarialPrompts:
+    """Tests for the 5 adversarial prompts in attacks.py."""
+
+    def test_five_prompts_non_placeholder(self):
+        """Verify exactly 5 non-placeholder, distinct, substantial prompts with correct categories."""
+        from attacks.attacks import adversarial_prompts
+
+        assert len(adversarial_prompts) == 5
+
+        expected_categories = [
+            "Completion / Fill-in-the-blank",
+            "Translation / Reformatting",
+            "Hypothetical / Creative writing",
+            "Confirmation / Side-channel",
+            "Multi-step / Gradual escalation",
+        ]
+
+        seen_inputs = set()
+        for i, prompt in enumerate(adversarial_prompts):
+            # Check id and category
+            assert prompt["id"] == i + 1
+            assert prompt["category"] == expected_categories[i]
+            
+            # Check input is non-placeholder (not "TODO:" or empty)
+            input_text = prompt["input"]
+            assert input_text and not input_text.strip().startswith("TODO:")
+            assert len(input_text) > 100  # substantial (500+ chars expected)
+            
+            # Check distinct
+            assert input_text not in seen_inputs, f"Duplicate prompt at index {i}"
+            seen_inputs.add(input_text)
+            
+            # Check no prefilled leaked flag
+            assert "leaked" not in prompt or prompt.get("leaked") is None
+
+    def test_prompts_target_all_leak_targets(self):
+        """Verify prompts collectively target at least one match substring per leak target."""
+        from attacks.attacks import adversarial_prompts
+        from core.config import load_protected_payload
+
+        all_inputs = " ".join(p["input"] for p in adversarial_prompts)
+        data = load_protected_payload()
+        
+        # Check each leak target has at least one match_substring appearing in prompts
+        for target in data.get("leak_targets", []):
+            match_substrings = target.get("match_substrings", [])
+            if not match_substrings:
+                continue
+            found = any(substr in all_inputs for substr in match_substrings if substr)
+            assert found, f"No match substring for leak target '{target['id']}' found in prompts (checked: {match_substrings})"
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
