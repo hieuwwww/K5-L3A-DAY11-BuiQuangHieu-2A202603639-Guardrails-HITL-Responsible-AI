@@ -230,5 +230,132 @@ class TestMonitoringAlert:
         assert "alerts" in data
 
 
+class TestAssignmentSuite:
+    """Tests for run_assignment_suite."""
+
+    @pytest.fixture
+    def mock_pipeline(self):
+        from assignment.pipeline import build_production_plugins, build_observability
+        from agents.agent import create_blue_agent
+        from core.openai_runtime import OpenAIRunner
+
+        plugins = build_production_plugins(max_requests=10, window_seconds=60, use_llm_judge=False)
+        audit, monitor = build_observability()
+
+        # Create a mock Blue runner that returns a fixed banking response
+        class MockRunner:
+            def __init__(self):
+                self.call_count = 0
+
+            async def chat(self, agent, user_message):
+                self.call_count += 1
+                return "The current savings interest rate is 4.25% per year."
+
+        mock_runner = MockRunner()
+
+        def mock_create_blue_agent(plugins_list):
+            from core.openai_runtime import OpenAIAgent
+            mock_agent = OpenAIAgent(name="blue_agent", instruction="test")
+            return mock_agent, mock_runner
+
+        return {
+            "plugins": plugins,
+            "audit": audit,
+            "monitor": monitor,
+            "create_blue_agent": mock_create_blue_agent,
+            "mock_runner": mock_runner,
+        }
+
+    @pytest.mark.asyncio
+    async def test_run_assignment_suite_safe_queries(self, mock_pipeline):
+        """Test that safe queries pass through without being blocked."""
+        from assignment.pipeline import run_assignment_suite
+
+        result = await run_assignment_suite(mock_pipeline)
+
+        assert "safe_queries" in result
+        assert len(result["safe_queries"]) >= 5
+        for q in result["safe_queries"]:
+            assert q["blocked"] is False
+            assert q["layer"] is None
+            assert "response_preview" in q
+
+    @pytest.mark.asyncio
+    async def test_run_assignment_suite_attack_queries(self, mock_pipeline):
+        """Test that attack queries are mostly blocked."""
+        from assignment.pipeline import run_assignment_suite
+
+        result = await run_assignment_suite(mock_pipeline)
+
+        assert "attack_queries" in result
+        assert len(result["attack_queries"]) >= 7
+        blocked = sum(1 for q in result["attack_queries"] if q.get("blocked"))
+        assert blocked >= 5, f"Expected ≥5 attacks blocked, got {blocked}"
+
+    @pytest.mark.asyncio
+    async def test_run_assignment_suite_edge_cases(self, mock_pipeline):
+        """Test edge cases are handled."""
+        from assignment.pipeline import run_assignment_suite
+
+        result = await run_assignment_suite(mock_pipeline)
+
+        assert "edge_cases" in result
+        assert len(result["edge_cases"]) >= 3
+        for q in result["edge_cases"]:
+            assert "input" in q
+            assert "blocked" in q
+
+    @pytest.mark.asyncio
+    async def test_run_assignment_suite_rate_limit(self, mock_pipeline):
+        """Test rate limit burst accounting."""
+        from assignment.pipeline import run_assignment_suite
+
+        result = await run_assignment_suite(mock_pipeline)
+
+        assert "rate_limit" in result
+        rl = result["rate_limit"]
+        assert rl["sent"] == 15
+        assert rl["passed"] + rl["blocked"] == rl["sent"]
+        assert rl["blocked"] >= 1
+
+    @pytest.mark.asyncio
+    async def test_run_assignment_suite_no_model_call_for_blocked(self, mock_pipeline):
+        """Test that blocked requests (input/rate) don't call the model."""
+        from assignment.pipeline import run_assignment_suite
+
+        result = await run_assignment_suite(mock_pipeline)
+
+        # Count how many times the mock runner was called
+        runner = mock_pipeline["mock_runner"]
+        # Should only be called for:
+        # - 6 safe queries (all pass)
+        # - 10 rate limit passed requests (first 10 of 15 for rate_user)
+        # NOT for: 7 attack queries (blocked by input_guardrail), 3 edge cases (blocked by topic_filter),
+        #          5 rate limit blocked requests
+        # Expected: 6 + 10 = 16
+        assert runner.call_count == 16
+
+    @pytest.mark.asyncio
+    async def test_run_assignment_suite_propagates_429(self, mock_pipeline):
+        """Test that 429-like exceptions from Blue runner propagate."""
+        from assignment.pipeline import run_assignment_suite
+        from unittest.mock import patch
+
+        class FailingRunner:
+            async def chat(self, agent, user_message):
+                raise Exception("429 Rate limit exceeded")
+
+        def mock_create_failing_agent(plugins_list):
+            from core.openai_runtime import OpenAIAgent
+            mock_agent = OpenAIAgent(name="blue_agent", instruction="test")
+            return mock_agent, FailingRunner()
+
+        failing_pipeline = mock_pipeline.copy()
+        failing_pipeline["create_blue_agent"] = mock_create_failing_agent
+
+        with pytest.raises(Exception, match="429"):
+            await run_assignment_suite(failing_pipeline)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
